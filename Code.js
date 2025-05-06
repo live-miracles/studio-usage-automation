@@ -37,20 +37,22 @@ function containsKeyword(text, keyword) {
     return regex.test(text);
 }
 
+function containsKeywordPrefix(text, keyword, minLength = 3) {
+    const words = text.split(/\s+/); // split text into words
+    for (const word of words) {
+        if (word.length >= minLength && keyword.startsWith(word)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 class Program {
     constructor(date, room, title, sessions) {
         this.date = date;
         this.room = room;
         this.title = title;
         this.sessions = sessions;
-
-        if (containsKeyword(title, 'APAC')) {
-            this.region = 'APAC';
-        } else if (containsKeyword(title, 'EU')) {
-            this.region = 'Europe';
-        } else {
-            this.region = 'India';
-        }
 
         for (let prog of PROGRAMS) {
             if (containsKeyword(title, prog)) {
@@ -63,7 +65,7 @@ class Program {
         }
 
         for (let lang of LANGUAGES) {
-            if (containsKeyword(title, lang.slice(0, 3))) {
+            if (containsKeywordPrefix(title, lang)) {
                 this.lang = lang;
                 break;
             }
@@ -71,13 +73,41 @@ class Program {
         if (!this.lang) {
             this.lang = 'English';
         }
+
+        if (containsKeywordPrefix(title, 'APAC', 4)) {
+            this.region = 'APAC';
+        } else if (containsKeywordPrefix(title, 'Europe', 2)) {
+            this.region = 'Europe';
+        } else if (this.lang === 'Spanish') {
+            this.region = 'APAC';
+        } else if (['Russian', 'German', 'Italian', 'French', 'Arabic'].includes(this.lang)) {
+            this.region = 'Europe';
+        } else {
+            this.region = 'India';
+        }
     }
+
+    static isDryRun(text) {
+        return /dry[-\s]?run|test|mic check|setup/i.test(text.toLowerCase());
+    }
+}
+
+function parseTime(timeStr) {
+    const match = timeStr.match(/^(\d{1,2})([:.]?(\d{1,2}))?$/);
+    if (!match) return null;
+
+    const hour = parseInt(match[1]);
+    const minute = match[3] ? parseInt(match[3], 10) : 0;
+
+    return [hour, minute];
 }
 
 class Session {
     constructor(startTime, endTime, isDryRun) {
-        const startParts = startTime.split(':').map(Number);
-        const endParts = endTime.split(':').map(Number);
+        const startParts = parseTime(startTime);
+        const endParts = parseTime(endTime);
+        assertThrow(startParts && endParts, 'Invalid time format: ' + startTime + ' - ' + endTime);
+
         this.start = startParts[0] * 60 + startParts[1];
         this.end = endParts[0] * 60 + endParts[1];
         this.isDryRun = isDryRun;
@@ -143,7 +173,10 @@ function getParsedData(data) {
             const cellEvents = cell.split(/\r?\n\r?\n+/); // Paragraphs
 
             for (const eventText of cellEvents) {
-                const lines = eventText.trim().split(/\r?\n/);
+                const lines = eventText
+                    .trim()
+                    .split(/\r?\n/)
+                    .map((line) => line.trim());
                 if (lines.length === 0) continue;
 
                 let title = '';
@@ -151,15 +184,21 @@ function getParsedData(data) {
 
                 for (const line of lines) {
                     const timeMatch = line.match(/(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})/);
-                    const lower = line.toLowerCase();
-
-                    if (timeMatch) {
-                        const isDryRun = /dry[-\s]?run|test|mic check|setup/i.test(lower);
-                        sessions.push(new Session(timeMatch[1], timeMatch[2], isDryRun));
-                    } else if (!title) {
-                        title = line.trim(); // First non-time line is title
+                    if (!timeMatch) {
+                        title = line; // First non-time line is title
+                        break;
                     }
                 }
+
+                for (const line of lines) {
+                    const timeMatch = line.match(/(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})/);
+
+                    if (timeMatch) {
+                        const isDryRun = Program.isDryRun(line) || Program.isDryRun(title);
+                        sessions.push(new Session(timeMatch[1], timeMatch[2], isDryRun));
+                    }
+                }
+
                 if (title || sessions.length > 0) {
                     programs.push(new Program(rowDate, headers[col], title, sessions));
                 }
@@ -241,7 +280,6 @@ function getRoomReport(startDate, endDate) {
 
     const table = [['', ...rooms.map((key) => key.split(' - ')[0])]];
 
-    // Initialize rows for each metric
     const metrics = ['Days Used', 'Live Count', 'Dry Run Count', 'Live Hours', 'Dry Run Hours'];
     for (const metric of metrics) {
         const row = [metric];
@@ -258,10 +296,10 @@ function getRoomReport(startDate, endDate) {
                     row.push(stats.dryRunCount);
                     break;
                 case 'Live Hours':
-                    row.push(+(stats.liveMin / 60).toFixed(2));
+                    row.push(parseInt(stats.liveMin / 60));
                     break;
                 case 'Dry Run Hours':
-                    row.push(+(stats.dryRunMin / 60).toFixed(2));
+                    row.push(parseInt(stats.dryRunMin / 60));
                     break;
             }
         }
