@@ -26,6 +26,13 @@ const LANGUAGES = [
     'Arabic',
 ];
 
+const SESSION_TYPES = {
+    live: 'live',
+    dryrun: 'dryrun',
+    maintainance: 'maintainance',
+    translation: 'translation',
+};
+
 function assertThrow(condition, message) {
     if (!condition) {
         throw new Error('Assertion failed: ' + (message || 'No message'));
@@ -38,9 +45,10 @@ function containsKeyword(text, keyword) {
 }
 
 function containsKeywordPrefix(text, keyword, minLength = 3) {
-    const words = text.split(/\s+/); // split text into words
+    const key = keyword.toLowerCase();
+    const words = text.toLowerCase().split(/\s+/); // split text into words
     for (const word of words) {
-        if (word.length >= minLength && keyword.startsWith(word)) {
+        if (word.length >= minLength && key.startsWith(word)) {
             return true;
         }
     }
@@ -50,7 +58,7 @@ function containsKeywordPrefix(text, keyword, minLength = 3) {
 class Program {
     constructor(date, room, title, sessions) {
         this.date = date;
-        this.room = room;
+        this.room = room.split(' - ')[0].trim();
         this.title = title;
         this.sessions = sessions;
 
@@ -90,6 +98,12 @@ class Program {
     static isDryRun(text) {
         return /dry[-\s]?run|test|mic check|setup/i.test(text.toLowerCase());
     }
+    static isMaintainance(text) {
+        return /maintenance/i.test(text.toLowerCase());
+    }
+    static isTranslation(text) {
+        return /translation/i.test(text.toLowerCase());
+    }
 }
 
 function parseTime(timeStr) {
@@ -103,14 +117,14 @@ function parseTime(timeStr) {
 }
 
 class Session {
-    constructor(startTime, endTime, isDryRun) {
+    constructor(startTime, endTime, type) {
         const startParts = parseTime(startTime);
         const endParts = parseTime(endTime);
         assertThrow(startParts && endParts, 'Invalid time format: ' + startTime + ' - ' + endTime);
 
         this.start = startParts[0] * 60 + startParts[1];
         this.end = endParts[0] * 60 + endParts[1];
-        this.isDryRun = isDryRun;
+        this.type = type;
     }
     get duration() {
         let duration = this.end - this.start;
@@ -154,7 +168,7 @@ function getFilteredDataInRange(startDate, endDate) {
 function getRoomNames() {
     const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Calendar');
     const headerRow = sheet.getRange(1, 2, 1, sheet.getLastColumn() - 1).getValues()[0];
-    return headerRow;
+    return headerRow.map((name) => name.split(' - ')[0].trim());
 }
 
 function getParsedData(data) {
@@ -170,7 +184,7 @@ function getParsedData(data) {
 
             if (!cell || typeof cell !== 'string') continue;
 
-            const cellEvents = cell.split(/\r?\n\r?\n+/); // Paragraphs
+            const cellEvents = cell.split(/^\s*(?:&)?\s*$/gm); // Paragraphs
 
             for (const eventText of cellEvents) {
                 const lines = eventText
@@ -195,7 +209,14 @@ function getParsedData(data) {
 
                     if (timeMatch) {
                         const isDryRun = Program.isDryRun(line) || Program.isDryRun(title);
-                        sessions.push(new Session(timeMatch[1], timeMatch[2], isDryRun));
+                        const isMaintainance =
+                            Program.isMaintainance(line) || Program.isMaintainance(title);
+                        const isTranslation =
+                            Program.isTranslation(line) || Program.isTranslation(title);
+                        let type = SESSION_TYPES.live;
+                        type = isDryRun ? SESSION_TYPES.dryrun : type;
+                        type = isMaintainance ? SESSION_TYPES.maintainance : type;
+                        sessions.push(new Session(timeMatch[1], timeMatch[2], type));
                     }
                 }
 
@@ -233,10 +254,13 @@ function getRoomStats(programs) {
         roomStats.days.add(date.toString());
 
         for (const session of sessions) {
-            if (session.isDryRun) {
+            if (session.type == SESSION_TYPES.dryrun) {
                 roomStats.dryRunCount += 1;
                 roomStats.dryRunMin += session.duration;
-            } else {
+            } else if (
+                session.type == SESSION_TYPES.live ||
+                session.type == SESSION_TYPES.translation
+            ) {
                 roomStats.liveCount += 1;
                 roomStats.liveMin += session.duration;
             }
@@ -262,7 +286,7 @@ function getProgramStats(programs) {
         );
 
         // Skip if no live session
-        const hasLiveSession = prog.sessions.some((s) => !s.isDryRun);
+        const hasLiveSession = prog.sessions.some((s) => s.type === SESSION_TYPES.live);
         if (!hasLiveSession) continue;
 
         if (!stats[region][lang]) stats[region][lang] = {};
@@ -277,8 +301,7 @@ function getProgramStats(programs) {
 function getRoomReport(startDate, endDate) {
     const roomStats = getStats(startDate, endDate).rooms;
     const rooms = Object.keys(roomStats);
-
-    const table = [['', ...rooms.map((key) => key.split(' - ')[0])]];
+    const table = [['', ...rooms]];
 
     const metrics = ['Days Used', 'Live Count', 'Dry Run Count', 'Live Hours', 'Dry Run Hours'];
     for (const metric of metrics) {
