@@ -1,10 +1,20 @@
 const CALENDAR_TAB = 'Calendar';
 
-const REGIONS = ['India', 'Europe', 'APAC'];
-const PROGRAMS = ['Step 7', '7 Day', 'Satsang', 'Other'];
+const PROJECT_SAMSKRITI = [
+    'Hara Hara Mahadev',
+    'Nirvana Shatakam',
+    'Kalaripayattu',
+    'Guru Paduka Stotram',
+];
+const REGIONS = ['India', 'Europe', 'APAC', 'PS'];
+const PROGRAMS = ['Other', 'Step 7', '7 Day', 'Satsang', ...PROJECT_SAMSKRITI];
 const PROGRAM_SESSIONS = {
     'Step 7': 5,
     '7 Day': 7,
+    'Hara Hara Mahadev': 4,
+    'Nirvana Shatakam': 6,
+    Kalaripayattu: 9,
+    'Guru Paduka Stotram': 7,
     Satsang: 1,
     Other: 1,
 };
@@ -90,6 +100,8 @@ class Program {
             this.region = 'APAC';
         } else if (['Russian', 'German', 'Italian', 'French', 'Arabic'].includes(this.lang)) {
             this.region = 'Europe';
+        } else if (PROJECT_SAMSKRITI.includes(this.type)) {
+            this.region = 'PS';
         } else {
             this.region = 'India';
         }
@@ -114,6 +126,13 @@ function parseTime(timeStr) {
     const minute = match[3] ? parseInt(match[3], 10) : 0;
 
     return [hour, minute];
+}
+
+function parseTimeRange(str) {
+    const match = str.match(/(\d{1,2}[:.]\d{2})\s*-\s*(\d{1,2}[:.]\d{2})/);
+    if (!match) return null;
+
+    return [match[1], match[2]];
 }
 
 class Session {
@@ -141,8 +160,8 @@ function getStats(startDate, endDate) {
     const roomStats = getRoomStats(parsedData);
     const programStats = getProgramStats(parsedData);
     return {
-        rooms: roomStats,
-        programs: programStats,
+        roomStats: roomStats,
+        programStats: programStats,
     };
 }
 
@@ -197,7 +216,7 @@ function getParsedData(data) {
                 const sessions = [];
 
                 for (const line of lines) {
-                    const timeMatch = line.match(/(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})/);
+                    const timeMatch = parseTimeRange(line);
                     if (!timeMatch) {
                         title = line; // First non-time line is title
                         break;
@@ -205,18 +224,16 @@ function getParsedData(data) {
                 }
 
                 for (const line of lines) {
-                    const timeMatch = line.match(/(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})/);
+                    const timeRange = parseTimeRange(line);
 
-                    if (timeMatch) {
+                    if (timeRange) {
                         const isDryRun = Program.isDryRun(line) || Program.isDryRun(title);
                         const isMaintainance =
                             Program.isMaintainance(line) || Program.isMaintainance(title);
-                        const isTranslation =
-                            Program.isTranslation(line) || Program.isTranslation(title);
                         let type = SESSION_TYPES.live;
                         type = isDryRun ? SESSION_TYPES.dryrun : type;
                         type = isMaintainance ? SESSION_TYPES.maintainance : type;
-                        sessions.push(new Session(timeMatch[1], timeMatch[2], type));
+                        sessions.push(new Session(timeRange[0], timeRange[1], type));
                     }
                 }
 
@@ -271,6 +288,7 @@ function getRoomStats(programs) {
         stats[room].daysUsed = stats[room].days.size;
         delete stats[room].days;
     }
+    console.log('Room Stats', stats);
     return stats;
 }
 
@@ -286,20 +304,25 @@ function getProgramStats(programs) {
         );
 
         // Skip if no live session
-        const hasLiveSession = prog.sessions.some((s) => s.type === SESSION_TYPES.live);
-        if (!hasLiveSession) continue;
 
         if (!stats[region][lang]) stats[region][lang] = {};
-        if (!stats[region][lang][prog.type]) stats[region][lang][type] = 0;
+        if (!stats[region][lang][prog.type]) stats[region][lang][type] = { count: 0, min: 0 };
 
-        stats[region][lang][type]++;
+        const hasLiveSession = prog.sessions.some((s) => s.type === SESSION_TYPES.live);
+        if (hasLiveSession) {
+            stats[region][lang][type].count++;
+        }
+        prog.sessions.forEach((session) => {
+            stats[region][lang][type].min += session.duration;
+        });
     }
 
+    console.log('Program Stats', stats);
     return stats;
 }
 
 function getRoomReport(startDate, endDate) {
-    const roomStats = getStats(startDate, endDate).rooms;
+    const roomStats = getStats(startDate, endDate).roomStats;
     const rooms = Object.keys(roomStats);
     const table = [['', ...rooms]];
 
@@ -329,19 +352,38 @@ function getRoomReport(startDate, endDate) {
         table.push(row);
     }
 
+    console.log('Room Report', table);
     return table;
 }
 
-function getProgramReport(startDate, endDate) {
-    const programStats = getStats(startDate, endDate).programs;
-    const table = [];
+function getProgramCountReport(startDate, endDate, regionFilter = null) {
+    const programStats = getStats(startDate, endDate).programStats;
+    if (regionFilter) {
+        Object.keys(programStats).forEach(
+            (region) => region === regionFilter || delete programStats[region],
+        );
+    }
+
+    // const types = PROGRAMS.filter((type) => {
+    //     for (const region of Object.keys(programStats)) {
+    //         for (const lang of Object.keys(programStats[region])) {
+    //             if (programStats[region][lang][type]) {
+    //                 return true;
+    //             }
+    //         }
+    //     }
+    //     return false;
+    // });
+    const types = PROGRAMS;
+    const table = [['Region', 'Language', ...types]];
+
     Object.keys(programStats).forEach((region) => {
         const regionTable = [];
         Object.keys(programStats[region]).forEach((lang) => {
-            const row = [region, lang, ...Array(PROGRAMS.length).fill(0)];
+            const row = [region, lang, ...Array(types.length).fill(0)];
             Object.keys(programStats[region][lang]).forEach((type) => {
-                row[2 + PROGRAMS.indexOf(type)] = Math.round(
-                    programStats[region][lang][type] / PROGRAM_SESSIONS[type],
+                row[table[0].indexOf(type)] = Math.round(
+                    programStats[region][lang][type].count / PROGRAM_SESSIONS[type],
                 );
             });
             regionTable.push(row);
@@ -351,9 +393,47 @@ function getProgramReport(startDate, endDate) {
             const sumB = b.filter((item) => typeof item === 'number').reduce((a, b) => a + b, 0);
             return sumB - sumA;
         });
+        regionTable.forEach((row) => {
+            for (let i = 0; i < row.length; i++) {
+                if (row[i] === 0) {
+                    row[i] = '';
+                }
+            }
+        });
+
         table.push(...regionTable);
     });
+    if (regionFilter) {
+        table.forEach((row) => row.shift());
+    }
 
-    table.unshift(['Region', 'Language', ...PROGRAMS]);
+    console.log('Program Count Report', table);
+    return table;
+}
+
+function getProgramHourReport(startDate, endDate) {
+    const programStats = getStats(startDate, endDate).programStats;
+    const table = [['Region', ...PROGRAMS]];
+
+    Object.keys(programStats).forEach((region) => {
+        const row = [region, ...Array(PROGRAMS.length).fill(0)];
+        Object.keys(programStats[region]).forEach((lang) => {
+            Object.keys(programStats[region][lang]).forEach((type) => {
+                row[table[0].indexOf(type)] += Math.round(
+                    programStats[region][lang][type].min / 60,
+                );
+            });
+        });
+
+        for (let i = 0; i < row.length; i++) {
+            if (row[i] === 0) {
+                row[i] = '';
+            }
+        }
+
+        table.push(row);
+    });
+
+    console.log('Program Hour Report', table);
     return table;
 }
